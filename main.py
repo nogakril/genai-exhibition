@@ -1,32 +1,15 @@
-import os
 import time
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from concurrent.futures import ThreadPoolExecutor
 import requests
 import concurrent.futures
 from openai import OpenAI
 import pandas as pd
-from bs4 import BeautifulSoup
 
 API_KEY = "7nPb-Hg5usk-AxmDfrc4kAQ7uXU5r1OIvwL9ozJ1D3VEQTkmYY-PBg"
 OPENAI_API_KEY = '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'
-ACCESS_CLUSTER = "curl \
-    -X GET 'https://6263858f-a18e-418f-b989-b0d27e6b20fb.us-east4-0.gcp.cloud.qdrant.io:6333' \
-    --header 'api-key: 7nPb-Hg5usk-AxmDfrc4kAQ7uXU5r1OIvwL9ozJ1D3VEQTkmYY-PBg'"
 MET_API_URL = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{objectID}"
 NUM_RESULTS = 5
-db_client = QdrantClient(url="http://localhost:6333")
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-COLUMNS_TO_VECTORIZE = ["Department", "Object Name", "Title", "Culture", "Period", "Artist Display Name",
-                        "Artist Display Bio", "Object Date", "Medium", "Dimensions", "Classification", "Tags",
-                        "Is Highlight"]
-
-
-def create_collection():
-    db_client.create_collection(
-        collection_name="test_collection",
-        vectors_config=VectorParams(size=4, distance=Distance.DOT),
-    )
 
 
 def fetch_metadata(id):
@@ -137,20 +120,11 @@ def get_object_ids_with_images():
     return all_object_ids
 
 
-def add_has_image_column():
-    object_ids_with_images = get_object_ids_with_images()
-    file_path = '/Users/noga.kril/Projects/bezalel/openaccess/MetObjects.csv'
-    data = pd.read_csv(file_path)
-    data['hasImage'] = data['Object ID'].apply(lambda x: x in object_ids_with_images)
-    output_file_path = 'MetObjects_w_hasImage.csv'
-    data.to_csv(output_file_path, index=False)
-
-
 # Get a random sample of object IDs with images
-def show_sample_data():
-    object_ids_df = pd.read_csv('MetObjects_w_hasImage.csv')
-    random_object_ids = object_ids_df.sample(n=100)
-    random_object_ids.to_csv('temp.csv', index=False)
+def show_sample_data(file_path, output_file_path, sample_size=100):
+    object_ids_df = pd.read_csv(file_path)
+    random_object_ids = object_ids_df.sample(n=sample_size)
+    random_object_ids.to_csv(output_file_path, index=False)
 
 
 # count how many records have images and are highlights
@@ -160,92 +134,13 @@ def count_highlights_with_images():
     print(f"Number of records that are highlights and have images: {count}")
 
 
-# Function to fetch and parse HTML description using a session
-def fetch_description(session, url, class_name):
-    try:
-        # Fetch the HTML content from the URL
-        response = session.get(url)
-        if response.status_code != 200:
-            return None
-
-        # Parse the HTML content
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Find the div with the specified class name
-        element = soup.find('div', class_=class_name)
-        if element is None:
-            return None
-
-        # Extract and return the text content of the description
-        description = element.get_text(strip=True)
-        return description
-    except Exception as e:
-        return None
-
-
-# Function to process a chunk of data using a session
-def process_chunk(chunk, class_name, session):
-    chunk['Description'] = chunk['Link Resource'].apply(
-        lambda x: fetch_description(session, x, class_name) if pd.notna(x) else None)
-    return chunk[['objectID', 'Link Resource', 'Description']]
-
-
-# Function to save progress to a temporary CSV file
-def save_progress(temp_file, chunk, mode='a'):
-    if not os.path.exists(temp_file) or mode == 'w':
-        chunk.to_csv(temp_file, index=False, mode=mode)
-    else:
-        chunk.to_csv(temp_file, index=False, mode=mode, header=False)
-
-
-# Function to add description column using threading
-def add_description_column(class_name='artwork__intro__desc', temp_file='temp_progress.csv',
-                           output_file='MetObjects_w_hasImage_w_description.csv', chunksize=50, max_workers=10):
-    data = pd.read_csv('MetObjects_w_hasImage.csv')
-
-    # Filter rows where hasImage is True and keep only relevant columns
-    data_with_images = data[data['hasImage'] == True][['Object ID', 'Link Resource']]
-
-    # Remove temp file if it exists
-    if os.path.exists(temp_file):
-        os.remove(temp_file)
-
-    # Process data in chunks using ThreadPoolExecutor
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        with requests.Session() as session:
-            for start in range(0, len(data_with_images), chunksize):
-                end = start + chunksize
-                chunk = data_with_images.iloc[start:end].copy()
-                futures.append(executor.submit(process_chunk, chunk, class_name, session))
-
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                chunk_result = future.result()
-                save_progress(temp_file, chunk_result)
-                print(f"Progress: {((i + 1) * chunksize) / len(data_with_images) * 100:.2f}%")
-
-    # Load the processed data from the temp file
-    final_data = pd.read_csv(temp_file)
-
-    # Merge the description data back into the original DataFrame
-    data.set_index('Object ID', inplace=True)
-    final_data.set_index('Object ID', inplace=True)
-    data.update(final_data)
-    data.reset_index(inplace=True)
-
-    # Save the final output file
-    data.to_csv(output_file, index=False)
-    print(f"Updated CSV saved to '{output_file}'")
-
-
 if __name__ == '__main__':
-    # test_object_ids = [
-    #     436524,
-    #     484935,
-    #     437112,
-    #     210191,
-    #     431264,
-    # ]
-    # curatorial_text, images_list = get_curatorial_text_and_images(test_object_ids)
-    # download_all_images(images_list)
-    add_description_column(chunksize=50, max_workers=20)
+    test_object_ids = [39, 35, 180, 177, 166]
+
+    curatorial_text, images_list = get_curatorial_text_and_images(test_object_ids)
+    download_all_images(images_list)
+    print(curatorial_text)
+
+    # data = pd.read_csv('objects_w_images_thin_w_description.csv')
+    # head = data.head(10)
+    # print(data.head(10))
