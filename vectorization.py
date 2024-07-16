@@ -1,23 +1,22 @@
 import torch
 from transformers import BertModel, BertTokenizer
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import models, PointStruct, SearchRequest, SearchParams
+from qdrant_client.http.models import models, PointStruct
 import pandas as pd
 
 # Constants
-COLUMNS_TO_VECTORIZE = ["Department", "Object Name", "Title", "Culture", "Period", "Artist Display Name",
-                        "Artist Display Bio", "Object Date", "Medium", "Dimensions", "Classification", "Tags",
-                        "Is Highlight"]
+COLUMNS_TO_VECTORIZE = ["Object Name", "Title", "Tags", "Description", "Department", "Medium", "Artist Display Name",
+                        "Object Begin Date", "Classification", "Is Highlight"]
 BATCH_SIZE = 1000
 VECTOR_DIM = 768  # BERT base produces vectors of size 768
 TOP_K = 5
 db_client = QdrantClient(url="http://localhost:6333")
-collection_name = "museum_objects"
+collection_name = "museum_objects_v2"
 
 # Load pre-trained BERT model and tokenizer
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-model = BertModel.from_pretrained('bert-base-uncased').to(device)
+model = BertModel.from_pretrained('bert-base-uncased').to(device).eval()
 
 
 def load_data(filepath):
@@ -41,7 +40,7 @@ def vectorize_text(text):
     encoded_input = tokenizer(text, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = model(**encoded_input)
-    vectors = outputs.pooler_output.detach().cpu().numpy()  # Move tensors to CPU after processing
+    vectors = outputs.last_hidden_state.detach().cpu().numpy().mean(axis=1).tolist()[0]  # Verify axis, check max
     return vectors
 
 
@@ -52,8 +51,8 @@ def vectorize_and_save_batch(batch, db_client, batch_index, total_batches, colle
     points = []
     for index, row in batch.iterrows():
         # Create a single string from the relevant columns for vectorization
-        text = ' '.join(str(row[col]) for col in COLUMNS_TO_VECTORIZE)
-        vector = vectorize_text(text).tolist()[0]
+        text = ' '.join('[' + str(col) + '] ' + str(row[col]).lower()  for col in COLUMNS_TO_VECTORIZE)
+        vector = vectorize_text(text)
 
         # Create PointStruct, ensuring 'Object ID' is retrieved directly as row['Object ID']
         point = PointStruct(vector=vector, id=row['Object ID'])
@@ -85,7 +84,7 @@ def vectorize_input_text(text):
     encoded_input = {k: v.to(device) for k, v in encoded_input.items()}  # Move to GPU if available
     with torch.no_grad():
         outputs = model(**encoded_input)
-    return outputs.pooler_output[0].cpu().numpy()  # Move tensor to CPU and convert to numpy array
+    return outputs.last_hidden_state.cpu().numpy().mean(axis=1).tolist()[0]
 
 
 def search_similar_vectors(vector, top_k):
@@ -95,14 +94,13 @@ def search_similar_vectors(vector, top_k):
     return [result.id for result in results]
 
 
-def get_top_objects():
-    input_text = input("Enter the description text: ")  # Get user input
+def get_top_objects(input_text, top_k=TOP_K):
     vector = vectorize_input_text(input_text)  # Vectorize input text
-    similar_object_ids = search_similar_vectors(vector, TOP_K)  # Search for similar vectors
-    print(f"Top {TOP_K} similar object IDs: {similar_object_ids}")
+    similar_object_ids = search_similar_vectors(vector, top_k)  # Search for similar vectors
+    print(f"Top {top_k} similar object IDs: {similar_object_ids}")
     return similar_object_ids
 
 
 if __name__ == "__main__":
     vectorization_process('MetObjects_w_hasImageTrue_w_description.csv')  # Replace with your actual file path
-    # get_top_objects()
+    # get_top_objects("this is a test")
