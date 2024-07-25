@@ -59,7 +59,7 @@ def generate_message_and_context(metadata, user_input):
             "with the theme suggested by this user input: '{user_input}'. "
             "Consider how these pieces might interact or contrast with each other to enrich this theme "
             "without delving into detailed descriptions of individual artworks."
-)
+            )
     for data in metadata:
         if metadata is not None:
             image_url, artist_name, title, id = extract_metadata(data)
@@ -90,8 +90,9 @@ def generate_completion_request(message, model_context):
 def get_curatorial_text_and_images(ids, user_input):
     metadata = get_metadata(ids)
     metadata = [data for data in metadata if data is not None and data.get('primaryImage') is not ''][:TOP_K]
+    info = [{'image_url': data['primaryImage'], 'info_url': data['objectURL']} for data in metadata]
     message, context, images = generate_message_and_context(metadata, user_input)
-    return generate_completion_request(message, context), images
+    return generate_completion_request(message, context), images, info
 
 
 def download_image(id, url):
@@ -137,6 +138,27 @@ def get_object_ids_with_images():
     return all_object_ids
 
 
+def extract_keywords(input_text):
+    try:
+        completion = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "keywords extraction with output of a python list of strings"},
+                {"role": "user", "content": f"Extract keywords from the following text:  ${input_text} "}
+            ],
+            temperature=0,
+            max_tokens=500,
+        )
+    except Exception as e:  # This catches any other exceptions
+        print("Caught an exception:", e)
+        completion = ""
+    result = completion.choices[0].message.content
+    chars_to_remove = "\"[],"
+    for c in chars_to_remove:
+        result = result.replace(c, "")
+    return result
+
+
 # Get a random sample of object IDs with images
 def show_sample_data(file_path, output_file_path, sample_size=100):
     object_ids_df = pd.read_csv(file_path)
@@ -144,24 +166,25 @@ def show_sample_data(file_path, output_file_path, sample_size=100):
     random_object_ids.to_csv(output_file_path, index=False)
 
 
-def present():
-    # user_input = input("Enter a text: ")
-    user_input = "vibes Sunday morning"
-    object_ids = get_top_objects(user_input, 50)
-    curatorial_text, images_dict = get_curatorial_text_and_images(object_ids, user_input)
+def present(user_input):
+    # user_input = extract_keywords(user_input)
+    object_ids = get_top_objects(user_input)
+    curatorial_text, images_dict, info = get_curatorial_text_and_images(object_ids, user_input)
     download_all_images(images_dict)
-    images_list = [(os.path.join(os.path.abspath(os.curdir), "images", "{}.jpg".format(id))) for id in images_dict.keys()]
-    # try:
-    #     response = requests.post("http://localhost:9980/", json={
-    #         "images": images_list,
-    #         "text": curatorial_text
-    #     })
-    #     if response.status_code != 200:
-    #         print("Error: ", response.text)
-    # except Exception as e:
-    #     print(f"An error occurred: {e}")
+    images_list = [(os.path.join(os.path.abspath(os.curdir), "images", "{}.jpg".format(id))) for id in
+                   images_dict.keys()]
+    try:
+        response = requests.post("http://localhost:9980/", json={
+            "images": images_list,
+            "text": curatorial_text
+        })
+        if response.status_code != 200:
+            print("Error: ", response.text)
+    except Exception as e:
+        print(f"An error occurred: {e}")
     print(curatorial_text, images_list)
+    return curatorial_text, info
 
 
 if __name__ == '__main__':
-    present()
+    present("sunflowers")

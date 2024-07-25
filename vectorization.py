@@ -9,9 +9,9 @@ COLUMNS_TO_VECTORIZE = ["Object Name", "Title", "Tags", "Description", "Departme
                         "Object Begin Date", "Classification", "Is Highlight"]
 BATCH_SIZE = 1000
 VECTOR_DIM = 768  # BERT base produces vectors of size 768
-TOP_K = 5
+TOP_K = 9
 db_client = QdrantClient(url="http://localhost:6333")
-collection_name = "museum_objects_v2"
+collection_name = "museum_objects"
 
 # Load pre-trained BERT model and tokenizer
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -40,7 +40,7 @@ def vectorize_text(text):
     encoded_input = tokenizer(text, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = model(**encoded_input)
-    vectors = outputs.last_hidden_state.detach().cpu().numpy().mean(axis=1).tolist()[0]  # Verify axis, check max
+    vectors = outputs.last_hidden_state.detach().cpu().numpy().max(axis=1).tolist()[0]  # Verify axis, check max
     return vectors
 
 
@@ -84,7 +84,7 @@ def vectorize_input_text(text):
     encoded_input = {k: v.to(device) for k, v in encoded_input.items()}  # Move to GPU if available
     with torch.no_grad():
         outputs = model(**encoded_input)
-    return outputs.last_hidden_state.cpu().numpy().mean(axis=1).tolist()[0]
+    return outputs.last_hidden_state.cpu().numpy().max(axis=1).tolist()[0]
 
 
 def search_similar_vectors(vector, top_k):
@@ -103,4 +103,3 @@ def get_top_objects(input_text, top_k=TOP_K):
 
 if __name__ == "__main__":
     vectorization_process('MetObjects_w_hasImageTrue_w_description.csv')  # Replace with your actual file path
-    # get_top_objects("this is a test")
